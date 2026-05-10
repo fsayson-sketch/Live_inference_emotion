@@ -60,6 +60,7 @@ def load_models():
         nn.Linear(512, len(CLASSES)),
     )
 
+    # Load CNN weights
     ckpt = torch.load(
         RESNET_PATH,
         map_location=device
@@ -75,36 +76,32 @@ def load_models():
     cnn.to(device)
     cnn.eval()
 
-    # CATBOOST
+    # Load CatBoost model
     cb = CatBoostClassifier()
     cb.load_model(CATBOOST_PATH)
 
-    # NEW MEDIAPIPE TASK API
-    from mediapipe.tasks import python
-    from mediapipe.tasks.python import vision
-
-    base_options = python.BaseOptions(
-        model_asset_path="face_landmarker.task"
+    # MediaPipe FaceMesh (OLD API)
+    face_mesh = mp.solutions.face_mesh.FaceMesh(
+        static_image_mode=False,
+        max_num_faces=1,
+        refine_landmarks=True,
+        min_detection_confidence=0.5,
+        min_tracking_confidence=0.5
     )
 
-    options = vision.FaceLandmarkerOptions(
-        base_options=base_options,
-        num_faces=1,
-        output_face_blendshapes=False,
-        output_facial_transformation_matrixes=False,
-    )
-
-    face_landmarker = vision.FaceLandmarker.create_from_options(
-        options
-    )
-
-    return cnn, cb, face_landmarker, device
+    return cnn, cb, face_mesh, device
 
 
 # --- VIDEO PROCESSOR ---
 class ComparisonProcessor(VideoProcessorBase):
     def __init__(self):
         self.cnn, self.cb, self.mesh, self.dev = load_models()
+
+        self.mp_drawing = mp.solutions.drawing_utils
+        self.drawing_spec = self.mp_drawing.DrawingSpec(
+            thickness=1,
+            color=(100, 100, 100),
+        )
 
         self.smooth_cnn = np.zeros(len(CLASSES))
         self.smooth_stack = np.zeros(len(CLASSES))
@@ -124,45 +121,36 @@ class ComparisonProcessor(VideoProcessorBase):
             cv2.COLOR_BGR2RGB
         )
 
-        # Lower resolution for cloud CPU
+        # Lower resolution for CPU cloud
         img_small = cv2.resize(
             img_rgb,
             (480, 360)
         )
 
-        # MediaPipe Tasks API
-        mp_image = mp.Image(
-            image_format=mp.ImageFormat.SRGB,
-            data=img_small
-        )
+        results = self.mesh.process(img_small)
 
-        results = self.mesh.detect(mp_image)
+        if results.multi_face_landmarks:
+            landmarks = results.multi_face_landmarks[0]
 
-        if results.face_landmarks:
-            landmarks = results.face_landmarks[0]
+            # Draw face mesh
+            self.mp_drawing.draw_landmarks(
+                img,
+                landmarks,
+                mp.solutions.face_mesh.FACEMESH_TESSELATION,
+                None,
+                self.drawing_spec,
+            )
 
-            coords = np.array([
-                [lm.x, lm.y, lm.z]
-                for lm in landmarks
-            ])
-
-            # Predict every 6 frames
             if self.frame_count % 6 == 0:
-                x1 = int(
-                    min(coords[:, 0]) * w_orig
-                )
+                coords = np.array([
+                    [lm.x, lm.y, lm.z]
+                    for lm in landmarks.landmark
+                ])
 
-                y1 = int(
-                    min(coords[:, 1]) * h_orig
-                )
-
-                x2 = int(
-                    max(coords[:, 0]) * w_orig
-                )
-
-                y2 = int(
-                    max(coords[:, 1]) * h_orig
-                )
+                x1 = int(min(coords[:, 0]) * w_orig)
+                y1 = int(min(coords[:, 1]) * h_orig)
+                x2 = int(max(coords[:, 0]) * w_orig)
+                y2 = int(max(coords[:, 1]) * h_orig)
 
                 crop = img_rgb[
                     max(0, y1):y2,
