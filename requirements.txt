@@ -1,11 +1,10 @@
 streamlit==1.45.1
 streamlit-webrtc==0.63.11
 opencv-python-headless
-torch==2.11.0
-torchvision==0.26.0
-mediapipe==0.10.35
+torch
+torchvision
+mediapipe==0.10.21
 numpy
 Pillow
 catboost
 av
-tornado==6.4.1
