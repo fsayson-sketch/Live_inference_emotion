@@ -259,27 +259,31 @@ class ComparisonProcessor(VideoProcessorBase):
 # --- UI ---
 st.title("🔬 Cloud Emotion Comparison")
 
-# Stable WebRTC config for Streamlit Cloud
 RTC_CONFIG = RTCConfiguration({
     "iceServers": [
         {
             "urls": [
                 "stun:stun.l.google.com:19302",
-                "stun:stun1.l.google.com:19302",
-                "stun:stun2.l.google.com:19302",
-                "stun:stun3.l.google.com:19302",
+                "stun:global.stun.twilio.com:3478"
             ]
         }
     ]
 })
 
-webrtc_streamer(
+ctx = webrtc_streamer(
     key="cloud-comparison",
     video_processor_factory=ComparisonProcessor,
     rtc_configuration=RTC_CONFIG,
     media_stream_constraints={
-        "video": True,
+        "video": {
+            "width": {"ideal": 320},
+            "height": {"ideal": 240},
+            "frameRate": {"ideal": 10},
+        },
         "audio": False,
     },
-    async_processing=False,
+    async_processing=True,
 )
+
+if ctx.state.playing:
+    st.success("Camera connected")
