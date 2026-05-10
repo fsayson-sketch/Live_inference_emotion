@@ -259,7 +259,7 @@ class ComparisonProcessor(VideoProcessorBase):
 # --- UI ---
 st.title("🔬 Cloud Emotion Comparison")
 
-# Better WebRTC config for Streamlit Cloud
+# Stable WebRTC config for Streamlit Cloud
 RTC_CONFIG = RTCConfiguration({
     "iceServers": [
         {
@@ -267,16 +267,8 @@ RTC_CONFIG = RTCConfiguration({
                 "stun:stun.l.google.com:19302",
                 "stun:stun1.l.google.com:19302",
                 "stun:stun2.l.google.com:19302",
+                "stun:stun3.l.google.com:19302",
             ]
-        },
-        {
-            "urls": [
-                "turn:openrelay.metered.ca:80",
-                "turn:openrelay.metered.ca:443",
-                "turn:openrelay.metered.ca:443?transport=tcp"
-            ],
-            "username": "openrelayproject",
-            "credential": "openrelayproject"
         }
     ]
 })
@@ -286,12 +278,8 @@ webrtc_streamer(
     video_processor_factory=ComparisonProcessor,
     rtc_configuration=RTC_CONFIG,
     media_stream_constraints={
-        "video": {
-            "width": 640,
-            "height": 480,
-            "frameRate": 15,
-        },
+        "video": True,
         "audio": False,
     },
-    async_processing=True,
+    async_processing=False,
 )
