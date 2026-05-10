@@ -120,149 +120,159 @@ class ComparisonProcessor(VideoProcessorBase):
         self.stack_res = "..."
 
     def recv(self, frame):
-        self.frame_count += 1
+    self.frame_count += 1
 
-        img = frame.to_ndarray(format="bgr24")
-        h_orig, w_orig, _ = img.shape
+    img = frame.to_ndarray(format="bgr24")
+    h_orig, w_orig, _ = img.shape
 
-        img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+    img_rgb = cv2.cvtColor(
+        img,
+        cv2.COLOR_BGR2RGB
+    )
 
-        # Lower resolution for cloud CPU performance
-        img_small = cv2.resize(img_rgb, (480, 360))
+    # Lower resolution for cloud CPU performance
+    img_small = cv2.resize(
+        img_rgb,
+        (480, 360)
+    )
 
-       mp_image = mp.Image(
-    image_format=mp.ImageFormat.SRGB,
-    data=img_small
-)
+    # MediaPipe Tasks API
+    mp_image = mp.Image(
+        image_format=mp.ImageFormat.SRGB,
+        data=img_small
+    )
 
-results = self.mesh.detect(mp_image)
+    results = self.mesh.detect(mp_image)
 
-        if results.face_landmarks:
-            landmarks = results.face_landmarks[0]
+    if results.face_landmarks:
+        landmarks = results.face_landmarks[0]
 
-            # Draw mesh
-            self.mp_drawing.draw_landmarks(
-                img,
-                landmarks,
-                mp.solutions.face_mesh.FACEMESH_TESSELATION,
-                None,
-                self.drawing_spec,
+        # Convert landmarks to numpy
+        coords = np.array([
+            [lm.x, lm.y, lm.z]
+            for lm in landmarks
+        ])
+
+        # Predict every 6 frames
+        if self.frame_count % 6 == 0:
+            x1 = int(
+                min(coords[:, 0]) * w_orig
             )
 
-            # Predict every 6 frames
-            if self.frame_count % 6 == 0:
-                coords = np.array([
-                    [lm.x, lm.y, lm.z]
-                    for lm in landmarks
+            y1 = int(
+                min(coords[:, 1]) * h_orig
+            )
+
+            x2 = int(
+                max(coords[:, 0]) * w_orig
+            )
+
+            y2 = int(
+                max(coords[:, 1]) * h_orig
+            )
+
+            crop = img_rgb[
+                max(0, y1):y2,
+                max(0, x1):x2
+            ]
+
+            if crop.size > 0:
+                pil_crop = Image.fromarray(crop)
+
+                transform = T.Compose([
+                    T.Resize((224, 224)),
+                    T.Grayscale(3),
+                    T.ToTensor(),
+                    T.Normalize(
+                        [0.485, 0.456, 0.406],
+                        [0.229, 0.224, 0.225]
+                    ),
                 ])
 
-                x1 = int(min(coords[:, 0]) * w_orig)
-                y1 = int(min(coords[:, 1]) * h_orig)
-                x2 = int(max(coords[:, 0]) * w_orig)
-                y2 = int(max(coords[:, 1]) * h_orig)
-
-                crop = img_rgb[
-                    max(0, y1):y2,
-                    max(0, x1):x2
-                ]
-
-                if crop.size > 0:
-                    pil_crop = Image.fromarray(crop)
-
-                    transform = T.Compose([
-                        T.Resize((224, 224)),
-                        T.Grayscale(3),
-                        T.ToTensor(),
-                        T.Normalize(
-                            [0.485, 0.456, 0.406],
-                            [0.229, 0.224, 0.225]
+                with torch.no_grad():
+                    p_rn = torch.softmax(
+                        self.cnn(
+                            transform(pil_crop)
+                            .unsqueeze(0)
+                            .to(self.dev)
                         ),
-                    ])
+                        dim=1
+                    ).cpu().numpy()[0]
 
-                    with torch.no_grad():
-                        p_rn = torch.softmax(
-                            self.cnn(
-                                transform(pil_crop)
-                                .unsqueeze(0)
-                                .to(self.dev)
-                            ),
-                            dim=1,
-                        ).cpu().numpy()[0]
+                iod = np.linalg.norm(
+                    coords[[362, 263]].mean(0)[:2]
+                    - coords[[33, 133]].mean(0)[:2]
+                ) + 1e-6
 
-                    iod = np.linalg.norm(
-                        coords[[362, 263]].mean(0)[:2]
-                        - coords[[33, 133]].mean(0)[:2]
-                    ) + 1e-6
+                c_norm = (
+                    coords - coords.mean(0)
+                ) / iod
 
-                    c_norm = (
-                        coords - coords.mean(0)
-                    ) / iod
+                feat_cb = np.concatenate([
+                    c_norm.flatten(),
+                    [
+                        np.linalg.norm(
+                            c_norm[a] - c_norm[b]
+                        )
+                        for a, b in LANDMARK_PAIRS
+                    ]
+                ]).reshape(1, -1)
 
-                    feat_cb = np.concatenate([
-                        c_norm.flatten(),
-                        [
-                            np.linalg.norm(
-                                c_norm[a] - c_norm[b]
-                            )
-                            for a, b in LANDMARK_PAIRS
-                        ]
-                    ]).reshape(1, -1)
+                p_cb = self.cb.predict_proba(
+                    feat_cb
+                )[0]
 
-                    p_cb = self.cb.predict_proba(
-                        feat_cb
-                    )[0]
+                p_stack = (
+                    0.55 * p_rn
+                    + 0.45 * p_cb
+                )
 
-                    p_stack = (
-                        0.55 * p_rn
-                        + 0.45 * p_cb
-                    )
+                self.smooth_cnn = (
+                    self.smooth_cnn * 0.6
+                    + p_rn * 0.4
+                )
 
-                    self.smooth_cnn = (
-                        self.smooth_cnn * 0.6
-                        + p_rn * 0.4
-                    )
+                self.smooth_stack = (
+                    self.smooth_stack * 0.6
+                    + p_stack * 0.4
+                )
 
-                    self.smooth_stack = (
-                        self.smooth_stack * 0.6
-                        + p_stack * 0.4
-                    )
+                self.cnn_res = (
+                    f"CNN: "
+                    f"{CLASSES[np.argmax(self.smooth_cnn)]} "
+                    f"({int(np.max(self.smooth_cnn) * 100)}%)"
+                )
 
-                    self.cnn_res = (
-                        f"CNN: "
-                        f"{CLASSES[np.argmax(self.smooth_cnn)]} "
-                        f"({int(np.max(self.smooth_cnn)*100)}%)"
-                    )
+                self.stack_res = (
+                    f"STACKING: "
+                    f"{CLASSES[np.argmax(self.smooth_stack)]} "
+                    f"({int(np.max(self.smooth_stack) * 100)}%)"
+                )
 
-                    self.stack_res = (
-                        f"STACKING: "
-                        f"{CLASSES[np.argmax(self.smooth_stack)]} "
-                        f"({int(np.max(self.smooth_stack)*100)}%)"
-                    )
-
-            cv2.putText(
-                img,
-                self.cnn_res,
-                (20, 40),
-                cv2.FONT_HERSHEY_DUPLEX,
-                0.7,
-                (255, 100, 0),
-                2,
-            )
-
-            cv2.putText(
-                img,
-                self.stack_res,
-                (20, 80),
-                cv2.FONT_HERSHEY_DUPLEX,
-                0.7,
-                (255, 0, 255),
-                2,
-            )
-
-        return frame.from_ndarray(
+        cv2.putText(
             img,
-            format="bgr24",
+            self.cnn_res,
+            (20, 40),
+            cv2.FONT_HERSHEY_DUPLEX,
+            0.7,
+            (255, 100, 0),
+            2,
         )
+
+        cv2.putText(
+            img,
+            self.stack_res,
+            (20, 80),
+            cv2.FONT_HERSHEY_DUPLEX,
+            0.7,
+            (255, 0, 255),
+            2,
+        )
+
+    return frame.from_ndarray(
+        img,
+        format="bgr24",
+    )
 
 
 # --- UI ---
