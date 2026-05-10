@@ -4,7 +4,8 @@ import cv2
 import torch
 import torch.nn as nn
 import numpy as np
-import mediapipe as mp
+import mediapipe
+mp = mediapipe
 import torchvision.models as models
 import torchvision.transforms as T
 from PIL import Image
@@ -38,7 +39,13 @@ def load_models():
     cnn.to(device).eval()
 
     cb = CatBoostClassifier().load_model(CATBOOST_PATH)
-    face_mesh = mp.solutions.face_mesh.FaceMesh(refine_landmarks=True)
+   face_mesh = mp.solutions.face_mesh.FaceMesh(
+    static_image_mode=False,
+    max_num_faces=1,
+    refine_landmarks=True,
+    min_detection_confidence=0.5,
+    min_tracking_confidence=0.5
+)
     return cnn, cb, face_mesh, device
 
 class ComparisonProcessor(VideoProcessorBase):
