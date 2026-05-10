@@ -1,9 +1,11 @@
-streamlit
-streamlit-webrtc
+streamlit==1.45.1
+streamlit-webrtc==0.63.11
+opencv-python-headless
 torch
 torchvision
-catboost
-mediapipe
-opencv-python-headless
+mediapipe==0.10.21
+numpy
 Pillow
-numpy<2.0.0
+catboost
+av
+tornado==6.4.1
