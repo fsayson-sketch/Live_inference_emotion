@@ -60,7 +60,6 @@ def load_models():
         nn.Linear(512, len(CLASSES)),
     )
 
-    # Load CNN weights
     ckpt = torch.load(
         RESNET_PATH,
         map_location=device
@@ -76,32 +75,36 @@ def load_models():
     cnn.to(device)
     cnn.eval()
 
-    # Load CatBoost model
+    # CATBOOST
     cb = CatBoostClassifier()
     cb.load_model(CATBOOST_PATH)
 
-    # MediaPipe FaceMesh (OLD API)
-    face_mesh = mp.solutions.face_mesh.FaceMesh(
-        static_image_mode=False,
-        max_num_faces=1,
-        refine_landmarks=True,
-        min_detection_confidence=0.5,
-        min_tracking_confidence=0.5
+    # NEW MEDIAPIPE TASK API
+    from mediapipe.tasks import python
+    from mediapipe.tasks.python import vision
+
+    base_options = python.BaseOptions(
+        model_asset_path="face_landmarker.task"
     )
 
-    return cnn, cb, face_mesh, device
+    options = vision.FaceLandmarkerOptions(
+        base_options=base_options,
+        num_faces=1,
+        output_face_blendshapes=False,
+        output_facial_transformation_matrixes=False,
+    )
+
+    face_landmarker = vision.FaceLandmarker.create_from_options(
+        options
+    )
+
+    return cnn, cb, face_landmarker, device
 
 
 # --- VIDEO PROCESSOR ---
 class ComparisonProcessor(VideoProcessorBase):
     def __init__(self):
         self.cnn, self.cb, self.mesh, self.dev = load_models()
-
-        self.mp_drawing = mp.solutions.drawing_utils
-        self.drawing_spec = self.mp_drawing.DrawingSpec(
-            thickness=1,
-            color=(100, 100, 100),
-        )
 
         self.smooth_cnn = np.zeros(len(CLASSES))
         self.smooth_stack = np.zeros(len(CLASSES))
@@ -121,36 +124,45 @@ class ComparisonProcessor(VideoProcessorBase):
             cv2.COLOR_BGR2RGB
         )
 
-        # Lower resolution for CPU cloud
+        # Lower resolution for cloud CPU
         img_small = cv2.resize(
             img_rgb,
             (480, 360)
         )
 
-        results = self.mesh.process(img_small)
+        # MediaPipe Tasks API
+        mp_image = mp.Image(
+            image_format=mp.ImageFormat.SRGB,
+            data=img_small
+        )
 
-        if results.multi_face_landmarks:
-            landmarks = results.multi_face_landmarks[0]
+        results = self.mesh.detect(mp_image)
 
-            # Draw face mesh
-            self.mp_drawing.draw_landmarks(
-                img,
-                landmarks,
-                mp.solutions.face_mesh.FACEMESH_TESSELATION,
-                None,
-                self.drawing_spec,
-            )
+        if results.face_landmarks:
+            landmarks = results.face_landmarks[0]
 
+            coords = np.array([
+                [lm.x, lm.y, lm.z]
+                for lm in landmarks
+            ])
+
+            # Predict every 6 frames
             if self.frame_count % 6 == 0:
-                coords = np.array([
-                    [lm.x, lm.y, lm.z]
-                    for lm in landmarks.landmark
-                ])
+                x1 = int(
+                    min(coords[:, 0]) * w_orig
+                )
 
-                x1 = int(min(coords[:, 0]) * w_orig)
-                y1 = int(min(coords[:, 1]) * h_orig)
-                x2 = int(max(coords[:, 0]) * w_orig)
-                y2 = int(max(coords[:, 1]) * h_orig)
+                y1 = int(
+                    min(coords[:, 1]) * h_orig
+                )
+
+                x2 = int(
+                    max(coords[:, 0]) * w_orig
+                )
+
+                y2 = int(
+                    max(coords[:, 1]) * h_orig
+                )
 
                 crop = img_rgb[
                     max(0, y1):y2,
@@ -263,27 +275,19 @@ RTC_CONFIG = RTCConfiguration({
     "iceServers": [
         {
             "urls": [
-                "stun:stun.l.google.com:19302",
-                "stun:global.stun.twilio.com:3478"
+                "stun:stun.l.google.com:19302"
             ]
         }
     ]
 })
 
-ctx = webrtc_streamer(
+webrtc_streamer(
     key="cloud-comparison",
     video_processor_factory=ComparisonProcessor,
     rtc_configuration=RTC_CONFIG,
     media_stream_constraints={
-        "video": {
-            "width": {"ideal": 320},
-            "height": {"ideal": 240},
-            "frameRate": {"ideal": 10},
-        },
+        "video": True,
         "audio": False,
     },
     async_processing=True,
 )
-
-if ctx.state.playing:
-    st.success("Camera connected")
