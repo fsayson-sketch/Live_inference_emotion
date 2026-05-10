@@ -43,7 +43,9 @@ LANDMARK_PAIRS = [
 # --- LOAD MODELS ---
 @st.cache_resource
 def load_models():
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = torch.device(
+        "cuda" if torch.cuda.is_available() else "cpu"
+    )
 
     # CNN MODEL
     cnn = models.resnet50(weights=None)
@@ -58,28 +60,45 @@ def load_models():
         nn.Linear(512, len(CLASSES)),
     )
 
-    # Load CNN weights
-    ckpt = torch.load(RESNET_PATH, map_location=device)
-    state_dict = ckpt["model_state"] if "model_state" in ckpt else ckpt
-    cnn.load_state_dict(state_dict)
+    ckpt = torch.load(
+        RESNET_PATH,
+        map_location=device
+    )
 
+    state_dict = (
+        ckpt["model_state"]
+        if "model_state" in ckpt
+        else ckpt
+    )
+
+    cnn.load_state_dict(state_dict)
     cnn.to(device)
     cnn.eval()
 
-    # Load CatBoost model
+    # CATBOOST
     cb = CatBoostClassifier()
     cb.load_model(CATBOOST_PATH)
 
-    # Load MediaPipe FaceMesh
-    face_mesh = mp.solutions.face_mesh.FaceMesh(
-        static_image_mode=False,
-        max_num_faces=1,
-        refine_landmarks=True,
-        min_detection_confidence=0.5,
-        min_tracking_confidence=0.5,
+    # NEW MEDIAPIPE TASK API
+    from mediapipe.tasks import python
+    from mediapipe.tasks.python import vision
+
+    base_options = python.BaseOptions(
+        model_asset_path="face_landmarker.task"
     )
 
-    return cnn, cb, face_mesh, device
+    options = vision.FaceLandmarkerOptions(
+        base_options=base_options,
+        num_faces=1,
+        output_face_blendshapes=False,
+        output_facial_transformation_matrixes=False,
+    )
+
+    face_landmarker = vision.FaceLandmarker.create_from_options(
+        options
+    )
+
+    return cnn, cb, face_landmarker, device
 
 
 # --- VIDEO PROCESSOR ---
@@ -111,10 +130,15 @@ class ComparisonProcessor(VideoProcessorBase):
         # Lower resolution for cloud CPU performance
         img_small = cv2.resize(img_rgb, (480, 360))
 
-        results = self.mesh.process(img_small)
+       mp_image = mp.Image(
+    image_format=mp.ImageFormat.SRGB,
+    data=img_small
+)
 
-        if results.multi_face_landmarks:
-            landmarks = results.multi_face_landmarks[0]
+results = self.mesh.detect(mp_image)
+
+        if results.face_landmarks:
+            landmarks = results.face_landmarks[0]
 
             # Draw mesh
             self.mp_drawing.draw_landmarks(
@@ -129,7 +153,7 @@ class ComparisonProcessor(VideoProcessorBase):
             if self.frame_count % 6 == 0:
                 coords = np.array([
                     [lm.x, lm.y, lm.z]
-                    for lm in landmarks.landmark
+                    for lm in landmarks
                 ])
 
                 x1 = int(min(coords[:, 0]) * w_orig)
